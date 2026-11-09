@@ -60,6 +60,9 @@ import {
   checkIsUserAdmin, 
   getStoredFirebaseConfig, 
   saveStoredFirebaseConfig, 
+  clearStoredFirebaseConfig,
+  firebaseConfigSource,
+  firebaseConfigError,
   type FirebaseRuntimeConfig,
   AUTHORIZED_SUPER_ADMIN_EMAILS
 } from '../services/firebase';
@@ -97,8 +100,8 @@ export const AdminView: React.FC = () => {
   const studioAudioRef = useRef<HTMLAudioElement | null>(null);
 
   // Firebase & Backup state
-  const [firebaseConfig, setFirebaseConfig] = useState<FirebaseRuntimeConfig>(() => {
-    return getStoredFirebaseConfig() || { projectId: '', apiKey: '', authDomain: '', storageBucket: '' };
+  const [firebaseConfig, setFirebaseConfig] = useState<Partial<FirebaseRuntimeConfig>>(() => {
+    return getStoredFirebaseConfig() || {};
   });
   const [firestoreStatus, setFirestoreStatus] = useState<{ connected: boolean; message: string; projectId?: string } | null>(null);
   const [isTestingDb, setIsTestingDb] = useState(false);
@@ -347,6 +350,16 @@ export const AdminView: React.FC = () => {
     const status = await testFirestoreConnection();
     setFirestoreStatus(status);
     setIsTestingDb(false);
+  };
+
+  const handleResetFirebaseConfig = () => {
+    clearStoredFirebaseConfig();
+    const envCfg = getStoredFirebaseConfig() || {};
+    setFirebaseConfig(envCfg);
+    setFeedbackMessage({ text: "Brauzer xotirasidagi sozlamalar tozalandi. Environment parametrlariga qaytarildi." });
+    setTimeout(() => {
+      window.location.reload();
+    }, 1000);
   };
 
   // Download Backup JSON
@@ -1161,21 +1174,50 @@ export const AdminView: React.FC = () => {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           
           <div className="bg-[#061d15] border border-[#d4af37]/30 rounded-2xl p-5 shadow-xl space-y-4">
-            <div className="flex items-center gap-2 border-b border-[#d4af37]/20 pb-3">
-              <Database className="w-5 h-5 text-[#d4af37]" />
-              <div>
-                <h3 className="text-sm font-bold text-[#f8f6f0]">
-                  Firebase Firestore & Storage Sozlamalari
-                </h3>
-                <p className="text-[11px] text-[#8fa89e]">
-                  Bulutli xizmatlar kalitlari
-                </p>
+            <div className="flex items-center justify-between border-b border-[#d4af37]/20 pb-3">
+              <div className="flex items-center gap-2">
+                <Database className="w-5 h-5 text-[#d4af37]" />
+                <div>
+                  <h3 className="text-sm font-bold text-[#f8f6f0]">
+                    Firebase Firestore & Storage Sozlamalari
+                  </h3>
+                  <p className="text-[11px] text-[#8fa89e]">
+                    Bulutli xizmatlar kalitlari va manba ustuvorligi
+                  </p>
+                </div>
               </div>
+
+              {/* Source Badge */}
+              <span
+                className={`text-[10px] px-2.5 py-1 rounded-full font-semibold border ${
+                  firebaseConfigSource === 'environment'
+                    ? 'bg-emerald-950 text-emerald-300 border-emerald-500/40'
+                    : firebaseConfigSource === 'localStorage'
+                    ? 'bg-teal-950 text-teal-300 border-teal-500/40'
+                    : 'bg-amber-950 text-amber-300 border-amber-500/40'
+                }`}
+              >
+                {firebaseConfigSource === 'environment'
+                  ? 'Manba: Environment (.env / Secrets)'
+                  : firebaseConfigSource === 'localStorage'
+                  ? 'Manba: localStorage'
+                  : 'Manba: Kiritilmagan'}
+              </span>
             </div>
+
+            {firebaseConfigError && (
+              <div className="p-3 rounded-xl bg-amber-950/70 border border-amber-500/40 text-amber-200 text-xs flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 text-amber-400 mt-0.5 flex-shrink-0" />
+                <div>
+                  <span className="font-bold block">Konfiguratsiya to'liq emas:</span>
+                  <span className="text-[11px] leading-relaxed">{firebaseConfigError}</span>
+                </div>
+              </div>
+            )}
 
             <div className="space-y-3 text-xs">
               <div>
-                <label className="text-[#8fa89e] block mb-1">Firebase Project ID:</label>
+                <label className="text-[#8fa89e] block mb-1">1. Firebase Project ID (VITE_FIREBASE_PROJECT_ID):</label>
                 <input
                   type="text"
                   placeholder="odiljon-qori-quran"
@@ -1183,12 +1225,12 @@ export const AdminView: React.FC = () => {
                   onChange={(e) =>
                     setFirebaseConfig({ ...firebaseConfig, projectId: e.target.value.trim() })
                   }
-                  className="w-full px-3 py-2 bg-[#041510] border border-[#d4af37]/30 rounded-xl font-mono text-xs text-[#f8f6f0] focus:outline-none"
+                  className="w-full px-3 py-2 bg-[#041510] border border-[#d4af37]/30 rounded-xl font-mono text-xs text-[#f8f6f0] focus:outline-none focus:border-[#d4af37]"
                 />
               </div>
 
               <div>
-                <label className="text-[#8fa89e] block mb-1">Firebase API Key:</label>
+                <label className="text-[#8fa89e] block mb-1">2. Firebase API Key (VITE_FIREBASE_API_KEY):</label>
                 <input
                   type="password"
                   placeholder="AIzaSy..."
@@ -1196,30 +1238,80 @@ export const AdminView: React.FC = () => {
                   onChange={(e) =>
                     setFirebaseConfig({ ...firebaseConfig, apiKey: e.target.value.trim() })
                   }
-                  className="w-full px-3 py-2 bg-[#041510] border border-[#d4af37]/30 rounded-xl font-mono text-xs text-[#f8f6f0] focus:outline-none"
+                  className="w-full px-3 py-2 bg-[#041510] border border-[#d4af37]/30 rounded-xl font-mono text-xs text-[#f8f6f0] focus:outline-none focus:border-[#d4af37]"
                 />
               </div>
 
               <div>
-                <label className="text-[#8fa89e] block mb-1">Storage Bucket:</label>
+                <label className="text-[#8fa89e] block mb-1">3. Auth Domain (VITE_FIREBASE_AUTH_DOMAIN):</label>
                 <input
                   type="text"
-                  placeholder="odiljon-qori-quran.appspot.com"
+                  placeholder="odiljon-qori-quran.firebaseapp.com"
+                  value={firebaseConfig.authDomain || ''}
+                  onChange={(e) =>
+                    setFirebaseConfig({ ...firebaseConfig, authDomain: e.target.value.trim() })
+                  }
+                  className="w-full px-3 py-2 bg-[#041510] border border-[#d4af37]/30 rounded-xl font-mono text-xs text-[#f8f6f0] focus:outline-none focus:border-[#d4af37]"
+                />
+              </div>
+
+              <div>
+                <label className="text-[#8fa89e] block mb-1">4. Storage Bucket (VITE_FIREBASE_STORAGE_BUCKET):</label>
+                <input
+                  type="text"
+                  placeholder="odiljon-qori-quran.firebasestorage.app"
                   value={firebaseConfig.storageBucket || ''}
                   onChange={(e) =>
                     setFirebaseConfig({ ...firebaseConfig, storageBucket: e.target.value.trim() })
                   }
-                  className="w-full px-3 py-2 bg-[#041510] border border-[#d4af37]/30 rounded-xl font-mono text-xs text-[#f8f6f0] focus:outline-none"
+                  className="w-full px-3 py-2 bg-[#041510] border border-[#d4af37]/30 rounded-xl font-mono text-xs text-[#f8f6f0] focus:outline-none focus:border-[#d4af37]"
                 />
               </div>
 
-              <button
-                onClick={handleSaveFirebaseConfig}
-                disabled={isTestingDb}
-                className="w-full py-2.5 rounded-xl bg-[#d4af37] text-[#041510] font-bold text-xs flex items-center justify-center gap-2 hover:bg-[#f3e5ab] transition-colors"
-              >
-                {isTestingDb ? 'Tekshirilmoqda...' : 'Saqlash va Ulanishni Tekshirish'}
-              </button>
+              <div>
+                <label className="text-[#8fa89e] block mb-1">5. Messaging Sender ID (VITE_FIREBASE_MESSAGING_SENDER_ID):</label>
+                <input
+                  type="text"
+                  placeholder="123456789012"
+                  value={firebaseConfig.messagingSenderId || ''}
+                  onChange={(e) =>
+                    setFirebaseConfig({ ...firebaseConfig, messagingSenderId: e.target.value.trim() })
+                  }
+                  className="w-full px-3 py-2 bg-[#041510] border border-[#d4af37]/30 rounded-xl font-mono text-xs text-[#f8f6f0] focus:outline-none focus:border-[#d4af37]"
+                />
+              </div>
+
+              <div>
+                <label className="text-[#8fa89e] block mb-1">6. App ID (VITE_FIREBASE_APP_ID):</label>
+                <input
+                  type="text"
+                  placeholder="1:123456789012:web:abcdef123456"
+                  value={firebaseConfig.appId || ''}
+                  onChange={(e) =>
+                    setFirebaseConfig({ ...firebaseConfig, appId: e.target.value.trim() })
+                  }
+                  className="w-full px-3 py-2 bg-[#041510] border border-[#d4af37]/30 rounded-xl font-mono text-xs text-[#f8f6f0] focus:outline-none focus:border-[#d4af37]"
+                />
+              </div>
+
+              <div className="flex items-center gap-2 pt-2">
+                <button
+                  onClick={handleSaveFirebaseConfig}
+                  disabled={isTestingDb}
+                  className="flex-1 py-2.5 rounded-xl bg-[#d4af37] text-[#041510] font-bold text-xs flex items-center justify-center gap-2 hover:bg-[#f3e5ab] transition-colors"
+                >
+                  {isTestingDb ? 'Tekshirilmoqda...' : 'Saqlash va Ulanishni Tekshirish'}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleResetFirebaseConfig}
+                  title="Brauzer keshidagi sozlamalarni tozalab, environment (Secrets) qiymatlariga qaytish"
+                  className="py-2.5 px-3 rounded-xl bg-[#041510] hover:bg-rose-950/60 text-[#8fa89e] hover:text-rose-300 border border-[#d4af37]/20 text-xs font-semibold transition-colors"
+                >
+                  Keshni tozalash
+                </button>
+              </div>
 
               {firestoreStatus && (
                 <div

@@ -24,7 +24,7 @@ import {
 } from 'firebase/storage';
 import { type User } from 'firebase/auth';
 
-import { db, auth, storage, checkIsUserAdmin } from './firebase';
+import { db, auth, storage, checkIsUserAdmin, firebaseConfigError } from './firebase';
 import { INITIAL_SURAHS_CATALOG } from '../data/surahsCatalog';
 import { getAyahsForSurah } from '../data/ayahsSample';
 import { 
@@ -902,7 +902,7 @@ export async function testFirestoreConnection(): Promise<{
   if (!db) {
     return {
       connected: false,
-      message: 'Firebase sozlamalari mavjud emas. Ma\'lumotlar faqat keshda saqlanmoqda.',
+      message: firebaseConfigError || 'Firebase sozlamalari to\'liq emas yoki mavjud emas. Ma\'lumotlar faqat keshda saqlanmoqda.',
     };
   }
 
