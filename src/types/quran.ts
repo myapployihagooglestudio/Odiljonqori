@@ -45,6 +45,7 @@ export interface Surah {
   audioUrl?: string | null;
   audioDurationSeconds?: number | null;
   audioStoragePath?: string | null;
+  audioFileSizeBytes?: number | null;
   
   // Publishing & Verification status
   isPublished: boolean;

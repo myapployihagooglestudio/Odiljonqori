@@ -1,14 +1,14 @@
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
- * ODILJON QORI QUR'ON - Firebase Client Configuration
+ * ODILJON QORI QUR'ON - Firebase Client Configuration & Service Initializer
  */
 
 import { initializeApp, getApps, getApp, type FirebaseApp } from 'firebase/app';
-import { getFirestore, type Firestore } from 'firebase/firestore';
-import { getAuth, type Auth } from 'firebase/auth';
+import { getFirestore, doc, getDoc, type Firestore } from 'firebase/firestore';
+import { getAuth, type Auth, type User } from 'firebase/auth';
+import { getStorage, type FirebaseStorage } from 'firebase/storage';
 
-// Firebase configuration can come from environment variables or runtime configuration
 export interface FirebaseRuntimeConfig {
   apiKey?: string;
   authDomain?: string;
@@ -19,26 +19,39 @@ export interface FirebaseRuntimeConfig {
   firestoreDatabaseId?: string;
 }
 
-// Check local storage or environment
+const STORAGE_CONFIG_KEY = 'odiljon_qori_firebase_config';
+
+// Primary authorized admin emails (fallbacks for initial bootstrapping before Firestore admin document creation)
+export const AUTHORIZED_SUPER_ADMIN_EMAILS = [
+  'mirzayevulugbek024@gmail.com',
+];
+
+/**
+ * Reads stored Firebase configuration from localStorage or Vite environment variables.
+ */
 export function getStoredFirebaseConfig(): FirebaseRuntimeConfig | null {
   try {
-    const raw = localStorage.getItem('odiljon_qori_firebase_config');
+    const raw = localStorage.getItem(STORAGE_CONFIG_KEY);
     if (raw) {
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      if (parsed.projectId && parsed.apiKey) {
+        return parsed;
+      }
     }
   } catch (e) {
     console.warn('Could not read firebase config from storage', e);
   }
 
-  // Fallback to import.meta.env if present
-  if (import.meta.env.VITE_FIREBASE_PROJECT_ID) {
+  // Fallback to Vite environment variables if present
+  const envProjectId = import.meta.env.VITE_FIREBASE_PROJECT_ID;
+  if (envProjectId) {
     return {
-      apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-      authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-      projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-      storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-      messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-      appId: import.meta.env.VITE_FIREBASE_APP_ID,
+      apiKey: import.meta.env.VITE_FIREBASE_API_KEY || '',
+      authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || `${envProjectId}.firebaseapp.com`,
+      projectId: envProjectId,
+      storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || `${envProjectId}.appspot.com`,
+      messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_Sender_ID || '',
+      appId: import.meta.env.VITE_FIREBASE_APP_ID || '',
     };
   }
 
@@ -46,34 +59,41 @@ export function getStoredFirebaseConfig(): FirebaseRuntimeConfig | null {
 }
 
 export function saveStoredFirebaseConfig(config: FirebaseRuntimeConfig): void {
-  localStorage.setItem('odiljon_qori_firebase_config', JSON.stringify(config));
+  localStorage.setItem(STORAGE_CONFIG_KEY, JSON.stringify(config));
+}
+
+export function clearStoredFirebaseConfig(): void {
+  localStorage.removeItem(STORAGE_CONFIG_KEY);
 }
 
 let appInstance: FirebaseApp | null = null;
 let dbInstance: Firestore | null = null;
 let authInstance: Auth | null = null;
+let storageInstance: FirebaseStorage | null = null;
 
 export function initFirebase(): {
   isConfigured: boolean;
   app: FirebaseApp | null;
   db: Firestore | null;
   auth: Auth | null;
+  storage: FirebaseStorage | null;
 } {
   const config = getStoredFirebaseConfig();
 
-  if (!config || !config.projectId) {
+  if (!config || !config.projectId || !config.apiKey) {
     return {
       isConfigured: false,
       app: null,
       db: null,
       auth: null,
+      storage: null,
     };
   }
 
   try {
     if (!getApps().length) {
       appInstance = initializeApp({
-        apiKey: config.apiKey || 'placeholder-key',
+        apiKey: config.apiKey,
         authDomain: config.authDomain || `${config.projectId}.firebaseapp.com`,
         projectId: config.projectId,
         storageBucket: config.storageBucket || `${config.projectId}.appspot.com`,
@@ -92,21 +112,64 @@ export function initFirebase(): {
       authInstance = getAuth(appInstance);
     }
 
+    if (!storageInstance && appInstance) {
+      storageInstance = getStorage(appInstance, config.storageBucket);
+    }
+
     return {
       isConfigured: true,
       app: appInstance,
       db: dbInstance,
       auth: authInstance,
+      storage: storageInstance,
     };
   } catch (err) {
-    console.warn('Firebase initialization notice:', err);
+    console.error('Firebase initialization error:', err);
     return {
       isConfigured: false,
       app: null,
       db: null,
       auth: null,
+      storage: null,
     };
   }
 }
 
-export const { isConfigured: isFirebaseActive, db, auth } = initFirebase();
+// Initialized singletons
+export const { 
+  isConfigured: isFirebaseActive, 
+  app, 
+  db, 
+  auth, 
+  storage 
+} = initFirebase();
+
+/**
+ * Verifies whether the given user has verified administrator privileges:
+ * 1. Checks if a document exists in /admins/{uid} in Firestore
+ * 2. Checks if the user's email matches the verified master admin list
+ * Never grants admin rights via client-side localStorage.
+ */
+export async function checkIsUserAdmin(user: User | null): Promise<boolean> {
+  if (!user) return false;
+
+  // 1. Check verified email
+  if (user.email && AUTHORIZED_SUPER_ADMIN_EMAILS.includes(user.email.toLowerCase())) {
+    return true;
+  }
+
+  // 2. Check Firestore /admins/{uid} collection
+  if (db) {
+    try {
+      const adminDocRef = doc(db, 'admins', user.uid);
+      const adminSnap = await getDoc(adminDocRef);
+      if (adminSnap.exists() && adminSnap.data()?.isActive === true) {
+        return true;
+      }
+    } catch (e) {
+      console.warn('Error verifying admin document in Firestore:', e);
+    }
+  }
+
+  return false;
+}

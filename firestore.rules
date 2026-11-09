@@ -2,7 +2,7 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     
-    // Global Safety Net: default deny
+    // Global Safety Net: default deny all
     match /{document=**} {
       allow read, write: if false;
     }
@@ -12,11 +12,20 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    // Admin authorization check: verifies against trusted /admins collection or master verified admin email
     function isAdmin() {
-      return isSignedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        (request.auth.token.email == 'mirzayevulugbek024@gmail.com' && request.auth.token.email_verified == true)
+      );
     }
 
-    // Surahs: Public can read published surahs. Admin has full control.
+    // Admins management collection: only admins can view or register new admin accounts
+    match /admins/{adminId} {
+      allow read, write: if isAdmin();
+    }
+
+    // Surahs: Public can only read published surahs. Admin has full control.
     match /surahs/{surahId} {
       allow read: if resource.data.isPublished == true || isAdmin();
       allow write: if isAdmin();
@@ -28,13 +37,13 @@ service cloud.firestore {
       }
     }
 
-    // Admin audit logs: only admins can read and create
+    // Admin audit logs: only verified admins can read and create, immutable
     match /admin_logs/{logId} {
       allow read, create: if isAdmin();
-      allow update, delete: if false; // Immutable audit logs
+      allow update, delete: if false;
     }
 
-    // Version snapshots: only admins can read and create
+    // Version snapshots: only verified admins can read and create, immutable
     match /version_snapshots/{snapshotId} {
       allow read, create: if isAdmin();
       allow update, delete: if false;
@@ -53,9 +62,10 @@ service cloud.firestore {
       }
     }
 
-    // System healthcheck document
+    // System collection: readable for healthcheck, write is strictly restricted to admin
     match /system/{docId} {
-      allow read, write: if true;
+      allow read: if true;
+      allow write: if isAdmin();
     }
   }
 }

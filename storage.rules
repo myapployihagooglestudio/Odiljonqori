@@ -7,16 +7,19 @@ service firebase.storage {
       allow read, write: if false;
     }
 
-    // Helper functions
     function isSignedIn() {
       return request.auth != null;
     }
 
+    // Storage Admin check: requires verified master admin email or Firestore /admins/{uid} registration
     function isAdmin() {
-      return isSignedIn(); // In production, add custom claim or admin check
+      return isSignedIn() && (
+        firestore.exists(/databases/(default)/documents/admins/$(request.auth.uid)) ||
+        (request.auth.token.email == 'mirzayevulugbek024@gmail.com' && request.auth.token.email_verified == true)
+      );
     }
 
-    // Recitations audio files: public read, admin write only
+    // Odiljon Qori recitations: public can stream and listen; only authenticated admin can upload or replace
     match /recitations/odiljon-qori/{surahFile} {
       allow read: if true;
       allow write: if isAdmin() 

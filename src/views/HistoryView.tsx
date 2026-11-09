@@ -7,7 +7,8 @@
 import React, { useState, useEffect } from 'react';
 import { History, Play, Trash2, Clock, BookOpen } from 'lucide-react';
 import { ListeningHistoryItem, Surah } from '../types/quran';
-import { getListeningHistory, clearListeningHistory, getAllSurahs } from '../services/storageService';
+import { getListeningHistory, clearListeningHistory, getAllSurahs, fetchCloudUserHistory } from '../services/storageService';
+import { auth } from '../services/firebase';
 import { useAudio } from '../context/AudioContext';
 
 interface HistoryViewProps {
@@ -20,7 +21,11 @@ export const HistoryView: React.FC<HistoryViewProps> = ({ onOpenSurah }) => {
   const { playSurah, seekTo } = useAudio();
 
   useEffect(() => {
-    setHistory(getListeningHistory());
+    if (auth?.currentUser) {
+      fetchCloudUserHistory(auth.currentUser.uid).then(setHistory);
+    } else {
+      setHistory(getListeningHistory());
+    }
     getAllSurahs().then(setSurahs);
   }, []);
 

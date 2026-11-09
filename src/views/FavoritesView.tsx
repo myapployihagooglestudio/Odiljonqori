@@ -7,7 +7,8 @@
 import React, { useState, useEffect } from 'react';
 import { Bookmark, Play, Trash2, BookOpen, Volume2 } from 'lucide-react';
 import { Bookmark as BookmarkType, Surah } from '../types/quran';
-import { getBookmarks, toggleBookmark, getAllSurahs } from '../services/storageService';
+import { getBookmarks, toggleBookmark, getAllSurahs, fetchCloudUserBookmarks } from '../services/storageService';
+import { auth } from '../services/firebase';
 import { useAudio } from '../context/AudioContext';
 
 interface FavoritesViewProps {
@@ -20,7 +21,11 @@ export const FavoritesView: React.FC<FavoritesViewProps> = ({ onOpenSurah }) => 
   const { playSurah } = useAudio();
 
   useEffect(() => {
-    setBookmarks(getBookmarks());
+    if (auth?.currentUser) {
+      fetchCloudUserBookmarks(auth.currentUser.uid).then(setBookmarks);
+    } else {
+      setBookmarks(getBookmarks());
+    }
     getAllSurahs().then(setSurahs);
   }, []);
 
