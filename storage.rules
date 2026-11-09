@@ -11,15 +11,21 @@ service firebase.storage {
       return request.auth != null;
     }
 
-    // Storage Admin check: requires verified master admin email or Firestore /admins/{uid} registration
+    // Storage Admin check: strictly requires single permanent admin UID 'odiljon-qori-permanent-admin'
+    // and either custom token claim isPermanentAdmin == true or active /admins/odiljon-qori-permanent-admin document.
     function isAdmin() {
-      return isSignedIn() && (
-        firestore.exists(/databases/(default)/documents/admins/$(request.auth.uid)) ||
-        request.auth.token.email == 'mirzayevulugbek024@gmail.com'
-      );
+      return isSignedIn()
+        && request.auth.uid == 'odiljon-qori-permanent-admin'
+        && (
+          request.auth.token.get('isPermanentAdmin', false) == true ||
+          (
+            firestore.exists(/databases/(default)/documents/admins/odiljon-qori-permanent-admin) &&
+            firestore.get(/databases/(default)/documents/admins/odiljon-qori-permanent-admin).data.isActive == true
+          )
+        );
     }
 
-    // Odiljon Qori recitations: public can stream and listen; only authenticated admin can upload or replace
+    // Odiljon Qori recitations: public can stream and listen; only the single permanent admin can upload or replace
     match /recitations/odiljon-qori/{surahFile} {
       allow read: if true;
       allow write: if isAdmin() 

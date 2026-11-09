@@ -7,6 +7,7 @@
 import { 
   doc, 
   getDoc, 
+  getDocFromServer,
   setDoc, 
   deleteDoc,
   getDocs, 
@@ -22,9 +23,18 @@ import {
   uploadBytesResumable, 
   getDownloadURL 
 } from 'firebase/storage';
-import { type User } from 'firebase/auth';
 
-import { db, auth, storage, checkIsUserAdmin, firebaseConfigError } from './firebase';
+import { 
+  app,
+  db, 
+  auth, 
+  storage, 
+  isFirebaseActive,
+  checkIsUserAdmin, 
+  firebaseConfigError,
+  getFirebaseConfigValidation,
+  FIXED_ADMIN_UID
+} from './firebase';
 import { INITIAL_SURAHS_CATALOG } from '../data/surahsCatalog';
 import { getAyahsForSurah } from '../data/ayahsSample';
 import { 
@@ -35,6 +45,17 @@ import {
   AdminLog, 
   VersionSnapshot 
 } from '../types/quran';
+
+export interface AdminActor {
+  uid: string;
+  username?: string;
+  email?: string | null;
+}
+
+function getActorName(actor?: AdminActor | null): string {
+  if (!actor) return FIXED_ADMIN_UID;
+  return actor.username || actor.email || actor.uid;
+}
 
 const STORAGE_KEYS = {
   SURAHS_CACHE: 'odiljon_qori_surahs_cache',
@@ -139,37 +160,37 @@ export async function getSurahByNumber(number: number): Promise<Surah | null> {
  */
 export async function updateSurah(
   updated: Surah, 
-  adminUser: User | null
+  adminUser: AdminActor | null
 ): Promise<{ success: boolean; error?: string }> {
   // Verify Admin Permissions
   if (!adminUser) {
     return { success: false, error: "Avtorizatsiya talab qilinadi: Admin tizimga kirmagan." };
   }
 
-  const isAdmin = await checkIsUserAdmin(adminUser);
+  const isAdmin = await checkIsUserAdmin();
   if (!isAdmin) {
-    return { success: false, error: "Ruxsat berilmadi: Sizning hisobingizda admin huquqlari yo'q." };
+    return { success: false, error: "Ruxsat berilmadi: Sessiya yaroqsiz yoki admin huquqlari tasdiqlanmadi." };
   }
 
   if (!db) {
     return { 
       success: false, 
-      error: "Firebase Firestore ulanmagan. Iltimos, avval Firebase sozlamalarini kiriting." 
+      error: firebaseConfigError || "Firebase Firestore ulanmagan. Iltimos, avval Firebase sozlamalarini kiriting." 
     };
   }
 
   try {
-    const adminEmail = adminUser.email || adminUser.uid;
+    const actorName = getActorName(adminUser);
 
     // 1. Create a version snapshot before updating
-    await createSnapshot(updated.number, `Admin update by ${adminEmail}`, adminUser);
+    await createSnapshot(updated.number, `Admin update by ${actorName}`, adminUser);
 
     // 2. Perform write to Firestore
     const docRef = doc(db, 'surahs', String(updated.number));
     const payload = {
       ...updated,
       updatedAt: new Date().toISOString(),
-      updatedBy: adminEmail,
+      updatedBy: actorName,
       serverTimestamp: Timestamp.now(),
     };
 
@@ -179,7 +200,7 @@ export async function updateSurah(
     const cached = await getAllSurahs();
     const idx = cached.findIndex((s) => s.number === updated.number);
     if (idx !== -1) {
-      cached[idx] = { ...updated, updatedAt: payload.updatedAt, updatedBy: adminEmail };
+      cached[idx] = { ...updated, updatedAt: payload.updatedAt, updatedBy: actorName };
       localStorage.setItem(STORAGE_KEYS.SURAHS_CACHE, JSON.stringify(cached));
     }
 
@@ -188,7 +209,7 @@ export async function updateSurah(
       action: 'UPDATE_SURAH',
       surahNumber: updated.number,
       details: `${updated.nameUzbek} (${updated.number}-sura) ma'lumotlari yangilandi. Audio status: ${updated.audioStatus}. Nashr: ${updated.isPublished ? 'Ha' : 'Yo\'q'}`,
-      actor: adminEmail,
+      actor: actorName,
     }, adminUser);
 
     return { success: true };
@@ -258,25 +279,25 @@ export async function getAyahsForSurahNumber(surahNumber: number): Promise<Ayah[
 export async function saveAyahsForSurah(
   surahNumber: number,
   ayahs: Ayah[],
-  adminUser: User | null
+  adminUser: AdminActor | null
 ): Promise<{ success: boolean; error?: string }> {
   if (!adminUser) {
     return { success: false, error: "Avtorizatsiya talab qilinadi: Admin tizimga kirmagan." };
   }
 
-  const isAdmin = await checkIsUserAdmin(adminUser);
+  const isAdmin = await checkIsUserAdmin();
   if (!isAdmin) {
     return { success: false, error: "Ruxsat berilmadi: Sizda admin huquqlari yo'q." };
   }
 
   if (!db) {
-    return { success: false, error: "Firebase Firestore ulanmagan." };
+    return { success: false, error: firebaseConfigError || "Firebase Firestore ulanmagan." };
   }
 
   try {
-    const adminEmail = adminUser.email || adminUser.uid;
+    const actorName = getActorName(adminUser);
 
-    // Use Firestore WriteBatch (batches in chunks of 450 to stay under 500 limit)
+    // Use Firestore WriteBatch (batches in chunks of 400 to stay under 500 limit)
     const chunkSize = 400;
     for (let i = 0; i < ayahs.length; i += chunkSize) {
       const batch = writeBatch(db);
@@ -287,7 +308,7 @@ export async function saveAyahsForSurah(
         batch.set(docRef, {
           ...ayah,
           updatedAt: Timestamp.now(),
-          updatedBy: adminEmail,
+          updatedBy: actorName,
         }, { merge: true });
       }
 
@@ -306,7 +327,7 @@ export async function saveAyahsForSurah(
     await setDoc(surahDocRef, { 
       timestampsVerified: allVerified,
       updatedAt: new Date().toISOString(),
-      updatedBy: adminEmail 
+      updatedBy: actorName 
     }, { merge: true });
 
     // Record audit log
@@ -314,7 +335,7 @@ export async function saveAyahsForSurah(
       action: 'UPDATE_AYAHS',
       surahNumber,
       details: `${surahNumber}-sura uchun ${ayahs.length} ta oyat vaqtlari Firestore'ga saqlandi. Holat: ${allVerified ? 'To\'liq tekshirilgan' : 'Qisman tekshirilgan'}`,
-      actor: adminEmail,
+      actor: actorName,
     }, adminUser);
 
     return { success: true };
@@ -334,14 +355,14 @@ export async function saveAyahsForSurah(
 export async function uploadSurahAudio(
   surahNumber: number,
   file: File,
-  adminUser: User | null,
+  adminUser: AdminActor | null,
   onProgress?: (progressPercent: number) => void
 ): Promise<{ success: boolean; downloadUrl?: string; storagePath?: string; durationSeconds?: number; error?: string }> {
   if (!adminUser) {
     return { success: false, error: "Audio yuklash uchun admin tizimga kirgan bo'lishi shart." };
   }
 
-  const isAdmin = await checkIsUserAdmin(adminUser);
+  const isAdmin = await checkIsUserAdmin();
   if (!isAdmin) {
     return { success: false, error: "Faqat tasdiqlangan admin audio fayllarni yuklay oladi." };
   }
@@ -350,7 +371,7 @@ export async function uploadSurahAudio(
   if (!activeStorage) {
     return { 
       success: false, 
-      error: "Firebase Storage SDK sozlanmagan. Iltimos, Firebase konfiguratsiyasida Storage bucket'ni ko'rsating." 
+      error: firebaseConfigError || "Firebase Storage SDK sozlanmagan. Iltimos, Firebase konfiguratsiyasida Storage bucket'ni ko'rsating." 
     };
   }
 
@@ -365,6 +386,7 @@ export async function uploadSurahAudio(
 
   return new Promise((resolve) => {
     try {
+      const actorName = getActorName(adminUser);
       const fileExt = file.name.split('.').pop() || 'mp3';
       const cleanSurahNum = surahNumber.toString().padStart(3, '0');
       const storagePath = `recitations/odiljon-qori/${cleanSurahNum}_${Date.now()}.${fileExt}`;
@@ -374,7 +396,7 @@ export async function uploadSurahAudio(
         contentType: file.type || 'audio/mpeg',
         customMetadata: {
           surahNumber: String(surahNumber),
-          uploadedBy: adminUser.email || adminUser.uid,
+          uploadedBy: actorName,
           uploadedAt: new Date().toISOString(),
         },
       });
@@ -421,7 +443,7 @@ export async function uploadSurahAudio(
                 audioFileSizeBytes: file.size,
                 audioStatus: 'uploaded_unverified',
                 updatedAt: new Date().toISOString(),
-                updatedBy: adminUser.email || adminUser.uid,
+                updatedBy: actorName,
               }, { merge: true });
             }
 
@@ -445,7 +467,7 @@ export async function uploadSurahAudio(
               action: 'AUDIO_UPLOAD',
               surahNumber,
               details: `${surahNumber}-sura uchun yangi audio fayl Firebase Storage'ga yuklandi (${(file.size / (1024 * 1024)).toFixed(1)} MB).`,
-              actor: adminUser.email || adminUser.uid,
+              actor: actorName,
             }, adminUser);
 
             resolve({
@@ -476,13 +498,14 @@ export async function uploadSurahAudio(
  */
 export async function removeSurahAudio(
   surahNumber: number,
-  adminUser: User | null
+  adminUser: AdminActor | null
 ): Promise<{ success: boolean; error?: string }> {
   if (!adminUser) return { success: false, error: "Admin tizimga kirmagan." };
-  const isAdmin = await checkIsUserAdmin(adminUser);
+  const isAdmin = await checkIsUserAdmin();
   if (!isAdmin) return { success: false, error: "Admin ruxsati yo'q." };
 
   try {
+    const actorName = getActorName(adminUser);
     if (db) {
       const docRef = doc(db, 'surahs', String(surahNumber));
       await setDoc(docRef, {
@@ -493,7 +516,7 @@ export async function removeSurahAudio(
         audioStatus: 'missing',
         timestampsVerified: false,
         updatedAt: new Date().toISOString(),
-        updatedBy: adminUser.email || adminUser.uid,
+        updatedBy: actorName,
       }, { merge: true });
     }
 
@@ -516,7 +539,7 @@ export async function removeSurahAudio(
       action: 'AUDIO_REMOVE',
       surahNumber,
       details: `${surahNumber}-suraning audio fayli olib tashlandi.`,
-      actor: adminUser.email || adminUser.uid,
+      actor: actorName,
     }, adminUser);
 
     return { success: true };
@@ -555,7 +578,7 @@ export async function getAdminLogs(): Promise<AdminLog[]> {
 
 export async function addAdminLog(
   log: Omit<AdminLog, 'id' | 'timestamp'>,
-  adminUser?: User | null
+  adminUser?: AdminActor | null
 ): Promise<void> {
   const newLog: AdminLog = {
     ...log,
@@ -590,7 +613,7 @@ export async function addAdminLog(
 export async function createSnapshot(
   surahNumber: number, 
   note: string,
-  adminUser?: User | null
+  adminUser?: AdminActor | null
 ): Promise<void> {
   try {
     const surah = await getSurahByNumber(surahNumber);
@@ -658,7 +681,7 @@ export async function getSnapshotsForSurah(surahNumber: number): Promise<Version
 
 export async function restoreSnapshot(
   snapshotId: string, 
-  adminUser: User | null
+  adminUser: AdminActor | null
 ): Promise<{ success: boolean; error?: string }> {
   try {
     const snapshots = await getSnapshotsForSurah(1); // or search across all
@@ -674,7 +697,7 @@ export async function restoreSnapshot(
       action: 'RESTORE_SNAPSHOT',
       surahNumber: target.surahNumber,
       details: `${target.surahNumber}-sura avvalgi versiyasiga (${new Date(target.timestamp).toLocaleString()}) qaytarildi.`,
-      actor: adminUser?.email || 'Admin',
+      actor: getActorName(adminUser),
     }, adminUser);
 
     return { success: true };
@@ -852,10 +875,15 @@ export async function exportFullDatabaseBackup(): Promise<string> {
 
 export async function importFullDatabaseBackup(
   jsonString: string,
-  adminUser: User | null
+  adminUser: AdminActor | null
 ): Promise<{ success: boolean; message: string }> {
   if (!adminUser) {
     return { success: false, message: "Zaxira nusxasini tiklash uchun admin tizimga kirgan bo'lishi shart." };
+  }
+
+  const isAdmin = await checkIsUserAdmin();
+  if (!isAdmin) {
+    return { success: false, message: "Ruxsat berilmadi: Sizda admin huquqlari yo'q." };
   }
 
   try {
@@ -878,7 +906,7 @@ export async function importFullDatabaseBackup(
     await addAdminLog({
       action: 'IMPORT_BACKUP',
       details: `To'liq zaxira fayli Firestore'ga tiklandi (${parsed.surahs.length} ta sura).`,
-      actor: adminUser.email || 'Admin',
+      actor: getActorName(adminUser),
     }, adminUser);
 
     return { 
@@ -899,26 +927,65 @@ export async function testFirestoreConnection(): Promise<{
   message: string;
   projectId?: string;
 }> {
-  if (!db) {
+  const validation = getFirebaseConfigValidation();
+
+  if (!validation.isComplete || !validation.isValidFormat) {
     return {
       connected: false,
-      message: firebaseConfigError || 'Firebase sozlamalari to\'liq emas yoki mavjud emas. Ma\'lumotlar faqat keshda saqlanmoqda.',
+      message:
+        validation.error ||
+        firebaseConfigError ||
+        "Firebase konfiguratsiyasi to'liq emas yoki noto'g'ri.",
+    };
+  }
+
+  if (!isFirebaseActive || !app || !db || !auth || !storage) {
+    return {
+      connected: false,
+      message:
+        firebaseConfigError ||
+        "Firebase xizmatlari (App, Firestore, Auth, Storage) ishga tushmadi.",
+    };
+  }
+
+  // Verify Firestore, Auth, and Storage all share the exact same FirebaseApp instance
+  if (db.app !== app || auth.app !== app || storage.app !== app) {
+    return {
+      connected: false,
+      message:
+        "Ichki sinxronizatsiya xatosi: Firestore, Auth va Storage bitta FirebaseApp instansiyasiga bog'lanmagan.",
     };
   }
 
   try {
-    const ref = doc(db, 'system', 'healthcheck');
-    // Read check
-    const snap = await getDoc(ref);
+    const refDoc = doc(db, 'system', 'healthcheck');
+
+    // Perform a real network round-trip to Firestore server (never use local cache)
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(
+        () =>
+          reject(
+            new Error(
+              "Firestore serveridan javob kelmadi (8s Timeout). Project ID, API Key yoki Firestore ma'lumotlar bazasi yaratilganligini tekshiring."
+            )
+          ),
+        8000
+      )
+    );
+
+    await Promise.race([getDocFromServer(refDoc), timeoutPromise]);
+
     return {
       connected: true,
-      message: `Firebase Firestore bilan aloqa muvaffaqiyatli o'rnatildi! (Loyiha: ${db.app.options.projectId})`,
-      projectId: db.app.options.projectId,
+      message: `Firebase Firestore va Storage bilan haqiqiy server aloqasi muvaffaqiyatli tasdiqlandi! (Loyiha: ${app.options.projectId})`,
+      projectId: app.options.projectId,
     };
   } catch (err) {
+    const rawMsg = (err as Error).message || String(err);
     return {
       connected: false,
-      message: `Firestore xatoligi: ${(err as Error).message}`,
+      message: `Firestore server ulanish xatoligi: ${rawMsg}`,
     };
   }
 }
+

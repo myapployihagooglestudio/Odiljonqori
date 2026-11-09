@@ -12,20 +12,40 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    // Admin authorization check: verifies against trusted /admins collection or master verified admin email
+    // Fixed single permanent administrator UID
+    function isPermanentAdminUid() {
+      return isSignedIn() && request.auth.uid == 'odiljon-qori-permanent-admin';
+    }
+
+    // Admin authorization check: strictly verifies the single permanent administrator identity
+    // (uid == 'odiljon-qori-permanent-admin') and active administrator status.
+    // All email-based and multi-admin authorization has been completely removed.
     function isAdmin() {
-      return isSignedIn() && (
-        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
-        request.auth.token.email == 'mirzayevulugbek024@gmail.com'
+      return isPermanentAdminUid() && (
+        request.auth.token.get('isPermanentAdmin', false) == true ||
+        (
+          exists(/databases/$(database)/documents/admins/odiljon-qori-permanent-admin) &&
+          get(/databases/$(database)/documents/admins/odiljon-qori-permanent-admin).data.isActive == true &&
+          get(/databases/$(database)/documents/admins/odiljon-qori-permanent-admin).data.role == 'admin'
+        )
       );
     }
 
-    // Admins management collection: only admins can view or register new admin accounts
+    // Single permanent administrator record:
+    // Only the single document 'odiljon-qori-permanent-admin' can exist.
+    // Creating any additional admin account (adminId != 'odiljon-qori-permanent-admin') is strictly forbidden.
     match /admins/{adminId} {
-      allow read, write: if isAdmin();
+      allow get: if isPermanentAdminUid() && adminId == 'odiljon-qori-permanent-admin';
+      allow list: if false;
+      allow create, update: if isPermanentAdminUid()
+        && adminId == 'odiljon-qori-permanent-admin'
+        && request.resource.data.uid == 'odiljon-qori-permanent-admin'
+        && request.resource.data.role == 'admin'
+        && request.resource.data.isActive == true;
+      allow delete: if false;
     }
 
-    // Surahs: Public can only read published surahs. Admin has full control.
+    // Surahs: Public can only read published surahs. Single permanent admin has full control.
     match /surahs/{surahId} {
       allow read: if resource.data.isPublished == true || isAdmin();
       allow write: if isAdmin();
@@ -37,13 +57,13 @@ service cloud.firestore {
       }
     }
 
-    // Admin audit logs: only verified admins can read and create, immutable
+    // Admin audit logs: only verified single permanent admin can read and create, immutable
     match /admin_logs/{logId} {
       allow read, create: if isAdmin();
       allow update, delete: if false;
     }
 
-    // Version snapshots: only verified admins can read and create, immutable
+    // Version snapshots: only verified single permanent admin can read and create, immutable
     match /version_snapshots/{snapshotId} {
       allow read, create: if isAdmin();
       allow update, delete: if false;
@@ -62,7 +82,7 @@ service cloud.firestore {
       }
     }
 
-    // System collection: readable for healthcheck, write is strictly restricted to admin
+    // System collection: readable for healthcheck, write is strictly restricted to single permanent admin
     match /system/{docId} {
       allow read: if true;
       allow write: if isAdmin();

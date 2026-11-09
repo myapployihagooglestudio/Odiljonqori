@@ -9,7 +9,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   ShieldCheck, 
   Lock, 
-  Mail, 
+  User,
   LogOut, 
   CheckCircle2, 
   AlertCircle, 
@@ -25,20 +25,10 @@ import {
   Play, 
   Database,
   UserCheck,
-  UserX,
   RefreshCw,
   FileAudio,
   Trash2
 } from 'lucide-react';
-import { 
-  signInWithEmailAndPassword, 
-  createUserWithEmailAndPassword, 
-  signInWithPopup, 
-  GoogleAuthProvider, 
-  signOut, 
-  onAuthStateChanged, 
-  type User 
-} from 'firebase/auth';
 
 import { Surah, Ayah, AdminLog } from '../types/quran';
 import { 
@@ -54,28 +44,29 @@ import {
   removeSurahAudio
 } from '../services/storageService';
 import { 
-  auth, 
-  db, 
-  storage, 
-  checkIsUserAdmin, 
   getStoredFirebaseConfig, 
   saveStoredFirebaseConfig, 
   clearStoredFirebaseConfig,
   firebaseConfigSource,
   firebaseConfigError,
+  onFirebaseLifecycleChange,
   type FirebaseRuntimeConfig,
-  AUTHORIZED_SUPER_ADMIN_EMAILS
+  type FirebaseConfigSource
 } from '../services/firebase';
+import {
+  loginPermanentAdmin,
+  verifyPermanentAdminSession,
+  logoutPermanentAdmin,
+  type VerifiedAdminIdentity
+} from '../services/adminAuthService';
 
 export const AdminView: React.FC = () => {
-  // Auth state
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [isAdminUser, setIsAdminUser] = useState<boolean>(false);
+  // Single permanent administrator session state
+  const [adminIdentity, setAdminIdentity] = useState<VerifiedAdminIdentity | null>(null);
   const [authLoading, setAuthLoading] = useState<boolean>(true);
   
-  // Login form state
-  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
-  const [email, setEmail] = useState('');
+  // Login form state (Strictly Username & Password only)
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
   const [authSubmitting, setAuthSubmitting] = useState(false);
@@ -103,34 +94,57 @@ export const AdminView: React.FC = () => {
   const [firebaseConfig, setFirebaseConfig] = useState<Partial<FirebaseRuntimeConfig>>(() => {
     return getStoredFirebaseConfig() || {};
   });
+  const [activeConfigSource, setActiveConfigSource] = useState<FirebaseConfigSource>(firebaseConfigSource);
+  const [activeConfigError, setActiveConfigError] = useState<string | undefined>(firebaseConfigError);
   const [firestoreStatus, setFirestoreStatus] = useState<{ connected: boolean; message: string; projectId?: string } | null>(null);
   const [isTestingDb, setIsTestingDb] = useState(false);
   const [logs, setLogs] = useState<AdminLog[]>([]);
   const [feedbackMessage, setFeedbackMessage] = useState<{ text: string; isError?: boolean } | null>(null);
 
-  // Monitor Firebase Auth state
+  // Subscribe to Firebase dynamic re-initialization events
   useEffect(() => {
-    if (!auth) {
-      setAuthLoading(false);
-      return;
-    }
+    const unsubscribe = onFirebaseLifecycleChange(() => {
+      setActiveConfigSource(firebaseConfigSource);
+      setActiveConfigError(firebaseConfigError);
+      setFirebaseConfig(getStoredFirebaseConfig() || {});
+    });
+    return () => unsubscribe();
+  }, []);
 
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      setAuthLoading(true);
-      setCurrentUser(user);
-      if (user) {
-        const hasAdminRole = await checkIsUserAdmin(user);
-        setIsAdminUser(hasAdminRole);
-        if (hasAdminRole) {
+  // Verify permanent admin session on mount and periodically check session expiry
+  useEffect(() => {
+    let mounted = true;
+
+    const verifySession = async (isInitial: boolean) => {
+      if (isInitial) setAuthLoading(true);
+      const res = await verifyPermanentAdminSession();
+      if (!mounted) return;
+
+      if (res.authenticated && res.admin) {
+        setAdminIdentity(res.admin);
+        if (isInitial) {
           loadData();
         }
       } else {
-        setIsAdminUser(false);
+        setAdminIdentity(null);
+        if (res.expired || res.error) {
+          setAuthError(res.error || 'Sessiya muddati tugadi. Iltimos, qaytadan tizimga kiring.');
+        }
       }
-      setAuthLoading(false);
-    });
+      if (isInitial) setAuthLoading(false);
+    };
 
-    return () => unsubscribe();
+    verifySession(true);
+
+    // Check session validity every 60 seconds
+    const intervalId = setInterval(() => {
+      verifySession(false);
+    }, 60 * 1000);
+
+    return () => {
+      mounted = false;
+      clearInterval(intervalId);
+    };
   }, []);
 
   const loadData = () => {
@@ -139,10 +153,10 @@ export const AdminView: React.FC = () => {
   };
 
   useEffect(() => {
-    if (syncSurahNumber && isAdminUser) {
+    if (syncSurahNumber && adminIdentity) {
       getAyahsForSurahNumber(syncSurahNumber).then(setSyncAyahs);
     }
-  }, [syncSurahNumber, isAdminUser]);
+  }, [syncSurahNumber, adminIdentity]);
 
   // Audio time update in studio
   useEffect(() => {
@@ -153,79 +167,42 @@ export const AdminView: React.FC = () => {
     return () => audio.removeEventListener('timeupdate', handleTime);
   }, [studioAudioRef.current]);
 
-  // Handle Email & Password Sign In
-  const handleEmailAuth = async (e: React.FormEvent) => {
+  // Handle Single Permanent Admin Login (Username & Password verified on server)
+  const handleAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!auth) {
-      setAuthError("Firebase sozlamalari mavjud emas. Iltimos, avval Firebase sozlamalarini kiriting.");
+    setAuthError(null);
+
+    if (!username.trim() || !password) {
+      setAuthError("Foydalanuvchi nomi va parol kiritilishi shart.");
       return;
     }
 
-    setAuthError(null);
-    setAuthSubmitting(true);
-
-    try {
-      if (authMode === 'login') {
-        const cred = await signInWithEmailAndPassword(auth, email.trim(), password);
-        const hasAdmin = await checkIsUserAdmin(cred.user);
-        if (!hasAdmin) {
-          setAuthError(`Kirish muvaffaqiyatli, ammo «${cred.user.email}» hisobi admin huquqiga ega emas.`);
-        }
-      } else {
-        const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
-        const hasAdmin = await checkIsUserAdmin(cred.user);
-        if (!hasAdmin) {
-          setAuthError(`Hisob yaratildi, ammo ushbu yangi hisob adminlar ro'yxatida tasdiqlanmagan.`);
-        }
-      }
-    } catch (err: any) {
-      console.error('Firebase Auth error:', err);
-      if (err.code === 'auth/invalid-credential' || err.code === 'auth/wrong-password') {
-        setAuthError("Email yoki maxfiy parol noto'g'ri.");
-      } else if (err.code === 'auth/user-not-found') {
-        setAuthError("Bunday foydalanuvchi topilmadi.");
-      } else if (err.code === 'auth/email-already-in-use') {
-        setAuthError("Ushbu email allaqachon ro'yxatdan o'tgan.");
-      } else if (err.code === 'auth/weak-password') {
-        setAuthError("Parol juda oddiy. Kamida 6 ta belgi kiriting.");
-      } else {
-        setAuthError(`Kirish xatoligi: ${err.message}`);
-      }
-    } finally {
-      setAuthSubmitting(false);
-    }
-  };
-
-  // Handle Google Sign In
-  const handleGoogleAuth = async () => {
-    if (!auth) {
-      setAuthError("Firebase sozlamalari mavjud emas.");
-      return;
-    }
-
-    setAuthError(null);
     setAuthSubmitting(true);
     try {
-      const provider = new GoogleAuthProvider();
-      const result = await signInWithPopup(auth, provider);
-      const hasAdmin = await checkIsUserAdmin(result.user);
-      if (!hasAdmin) {
-        setAuthError(`Google orqali kirdingiz («${result.user.email}»), ammo hisobingizda admin huquqlari yo'q.`);
+      const result = await loginPermanentAdmin(username, password);
+      if (result.authenticated && result.admin) {
+        setAdminIdentity(result.admin);
+        setPassword('');
+        setFeedbackMessage({
+          text: result.message || "Tizimga muvaffaqiyatli kirdingiz!",
+        });
+        loadData();
+        setTimeout(() => setFeedbackMessage(null), 4000);
+      } else {
+        setAuthError(result.error || "Foydalanuvchi nomi yoki maxfiy parol noto'g'ri.");
       }
     } catch (err: any) {
-      console.error('Google Sign-In error:', err);
-      setAuthError(`Google kirish xatoligi: ${err.message}`);
+      setAuthError(`Server bilan ulanishda xatolik: ${err?.message || "Tarmoq xatosi"}`);
     } finally {
       setAuthSubmitting(false);
     }
   };
 
   const handleSignOut = async () => {
-    if (auth) {
-      await signOut(auth);
-    }
-    setCurrentUser(null);
-    setIsAdminUser(false);
+    await logoutPermanentAdmin();
+    setAdminIdentity(null);
+    setPassword('');
+    setAuthError(null);
   };
 
   // Surah Edit Save
@@ -233,7 +210,7 @@ export const AdminView: React.FC = () => {
     if (!selectedSurah) return;
     setFeedbackMessage({ text: "Firestore'ga saqlanmoqda..." });
 
-    const res = await updateSurah(selectedSurah, currentUser);
+    const res = await updateSurah(selectedSurah, adminIdentity);
     if (res.success) {
       setFeedbackMessage({ text: "Sura ma'lumotlari haqiqiy Firestore bazasiga muvaffaqiyatli saqlandi!" });
       loadData();
@@ -253,7 +230,7 @@ export const AdminView: React.FC = () => {
     const res = await uploadSurahAudio(
       selectedSurah.number,
       audioFileToUpload,
-      currentUser,
+      adminIdentity,
       (pct) => setUploadProgress(pct)
     );
 
@@ -283,7 +260,7 @@ export const AdminView: React.FC = () => {
     }
 
     setFeedbackMessage({ text: "Audio fayl olib tashlanmoqda..." });
-    const res = await removeSurahAudio(selectedSurah.number, currentUser);
+    const res = await removeSurahAudio(selectedSurah.number, adminIdentity);
     if (res.success) {
       setSelectedSurah({
         ...selectedSurah,
@@ -332,7 +309,7 @@ export const AdminView: React.FC = () => {
   // Save Synchronized Ayahs to Firestore
   const handleSaveAyahTimestamps = async () => {
     setFeedbackMessage({ text: "Oyatlar vaqti Firestore'ga yozilmoqda..." });
-    const res = await saveAyahsForSurah(syncSurahNumber, syncAyahs, currentUser);
+    const res = await saveAyahsForSurah(syncSurahNumber, syncAyahs, adminIdentity);
     if (res.success) {
       setFeedbackMessage({ text: "Oyat vaqtlari Firestore subcollection'ga muvaffaqiyatli saqlandi!" });
       loadData();
@@ -342,24 +319,55 @@ export const AdminView: React.FC = () => {
     }
   };
 
-  // Firebase config update & probe
+  // Firebase config update, dynamic re-initialization & real Firestore server probe
   const handleSaveFirebaseConfig = async () => {
-    saveStoredFirebaseConfig(firebaseConfig);
-    setFeedbackMessage({ text: "Firebase sozlamalari saqlandi. Aloqa tekshirilmoqda..." });
     setIsTestingDb(true);
+    setFirestoreStatus(null);
+    setFeedbackMessage({ text: "Firebase qayta ishga tushirilmoqda va server bilan aloqa tekshirilmoqda..." });
+
+    const initResult = await saveStoredFirebaseConfig(firebaseConfig);
+    setActiveConfigSource(firebaseConfigSource);
+    setActiveConfigError(firebaseConfigError);
+
+    if (!initResult.isConfigured) {
+      const errMsg =
+        initResult.error ||
+        firebaseConfigError ||
+        "Firebase konfiguratsiyasi to'liq emas yoki noto'g'ri.";
+      setFirestoreStatus({
+        connected: false,
+        message: errMsg,
+      });
+      setFeedbackMessage({ text: errMsg, isError: true });
+      setIsTestingDb(false);
+      return;
+    }
+
     const status = await testFirestoreConnection();
     setFirestoreStatus(status);
+    setFeedbackMessage({
+      text: status.message,
+      isError: !status.connected,
+    });
+    if (status.connected) {
+      loadData();
+    }
     setIsTestingDb(false);
   };
 
-  const handleResetFirebaseConfig = () => {
-    clearStoredFirebaseConfig();
+  const handleResetFirebaseConfig = async () => {
+    setIsTestingDb(true);
+    await clearStoredFirebaseConfig();
     const envCfg = getStoredFirebaseConfig() || {};
     setFirebaseConfig(envCfg);
-    setFeedbackMessage({ text: "Brauzer xotirasidagi sozlamalar tozalandi. Environment parametrlariga qaytarildi." });
-    setTimeout(() => {
-      window.location.reload();
-    }, 1000);
+    setActiveConfigSource(firebaseConfigSource);
+    setActiveConfigError(firebaseConfigError);
+    const status = await testFirestoreConnection();
+    setFirestoreStatus(status);
+    setIsTestingDb(false);
+    setFeedbackMessage({
+      text: "Brauzer xotirasidagi sozlamalar tozalandi va Environment konfiguratsiyasidan qayta yuklandi.",
+    });
   };
 
   // Download Backup JSON
@@ -382,7 +390,7 @@ export const AdminView: React.FC = () => {
     const reader = new FileReader();
     reader.onload = async (event) => {
       const content = event.target?.result as string;
-      const res = await importFullDatabaseBackup(content, currentUser);
+      const res = await importFullDatabaseBackup(content, adminIdentity);
       setFeedbackMessage({ text: res.message, isError: !res.success });
       if (res.success) {
         loadData();
@@ -392,7 +400,7 @@ export const AdminView: React.FC = () => {
   };
 
   // ==========================================
-  // VIEW: AUTHENTICATION GATE
+  // VIEW: SINGLE PERMANENT ADMIN LOGIN GATE
   // ==========================================
 
   if (authLoading) {
@@ -404,8 +412,8 @@ export const AdminView: React.FC = () => {
     );
   }
 
-  // If user is not authenticated or lacks admin role
-  if (!currentUser || !isAdminUser) {
+  // Strictly require verified server-authenticated permanent admin session
+  if (!adminIdentity) {
     return (
       <div className="max-w-md mx-auto my-10 p-6 sm:p-8 rounded-3xl bg-[#061d15] border border-[#d4af37]/40 shadow-2xl text-[#f8f6f0]">
         <div className="text-center space-y-2 mb-6">
@@ -414,117 +422,66 @@ export const AdminView: React.FC = () => {
               <ShieldCheck className="w-7 h-7 text-[#d4af37]" />
             </div>
           </div>
-          <h2 className="text-xl font-bold">Admin Kirish Portali</h2>
+          <h2 className="text-xl font-bold">Boshqaruv Markaziga Kirish</h2>
           <p className="text-xs text-[#8fa89e]">
-            Firebase Authentication orqali server tomonidan tekshiriladigan xavfsiz kirish
+            ODILJON QORI QUR'ON — Yagona doimiy administrator tizimi
           </p>
         </div>
 
-        {/* If user is signed in with non-admin account */}
-        {currentUser && !isAdminUser && (
-          <div className="mb-6 p-4 rounded-2xl bg-amber-950/70 border border-amber-500/40 text-xs space-y-2">
-            <div className="flex items-center gap-2 text-amber-300 font-bold">
-              <UserX className="w-4 h-4" />
-              <span>Admin huquqi yo'q</span>
-            </div>
-            <p className="text-[#8fa89e]">
-              Siz «<strong>{currentUser.email}</strong>» hisobi bilan kirdingiz, ammo ushbu foydalanuvchi Firestore'da admin huquqiga ega emas.
-            </p>
-            <p className="text-[11px] text-amber-200/80">
-              Ruxsat berilgan super admin: <code>{AUTHORIZED_SUPER_ADMIN_EMAILS[0]}</code>
-            </p>
-            <button
-              onClick={handleSignOut}
-              className="mt-2 w-full py-2 rounded-xl bg-amber-900/60 hover:bg-amber-900 text-amber-200 font-semibold text-xs"
-            >
-              Hisobdan chiqish
-            </button>
-          </div>
-        )}
-
         {authError && (
-          <div className="mb-4 p-3 rounded-xl bg-rose-950/70 border border-rose-500/40 text-rose-200 text-xs flex items-center gap-2">
+          <div className="mb-5 p-3.5 rounded-xl bg-rose-950/70 border border-rose-500/40 text-rose-200 text-xs flex items-center gap-2.5">
             <AlertCircle className="w-4 h-4 text-rose-400 flex-shrink-0" />
             <span>{authError}</span>
           </div>
         )}
 
-        {(!currentUser || !isAdminUser) && (
-          <form onSubmit={handleEmailAuth} className="space-y-4">
-            <div>
-              <label className="text-xs text-[#8fa89e] block mb-1">Admin Email manzili</label>
-              <div className="relative">
-                <Mail className="w-4 h-4 text-[#8fa89e] absolute left-3 top-1/2 -translate-y-1/2" />
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="admin@odiljonqori.uz"
-                  className="w-full pl-9 pr-4 py-2.5 bg-[#041510] border border-[#d4af37]/30 rounded-xl text-xs text-[#f8f6f0] focus:outline-none focus:border-[#d4af37]"
-                  required
-                />
-              </div>
+        <form onSubmit={handleAdminLogin} className="space-y-4" noValidate>
+          <div>
+            <label htmlFor="admin-username-input" className="text-xs text-[#8fa89e] block mb-1.5 font-medium">
+              Foydalanuvchi nomi (Login)
+            </label>
+            <div className="relative">
+              <User className="w-4 h-4 text-[#8fa89e] absolute left-3.5 top-1/2 -translate-y-1/2" />
+              <input
+                id="admin-username-input"
+                type="text"
+                autoComplete="username"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="Foydalanuvchi nomini kiriting"
+                className="w-full pl-10 pr-4 py-2.5 bg-[#041510] border border-[#d4af37]/30 rounded-xl text-xs text-[#f8f6f0] focus:outline-none focus:border-[#d4af37]"
+                required
+              />
             </div>
+          </div>
 
-            <div>
-              <label className="text-xs text-[#8fa89e] block mb-1">Maxfiy parol</label>
-              <div className="relative">
-                <Lock className="w-4 h-4 text-[#8fa89e] absolute left-3 top-1/2 -translate-y-1/2" />
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="••••••••••••"
-                  className="w-full pl-9 pr-4 py-2.5 bg-[#041510] border border-[#d4af37]/30 rounded-xl text-xs text-[#f8f6f0] focus:outline-none focus:border-[#d4af37]"
-                  required
-                />
-              </div>
+          <div>
+            <label htmlFor="admin-password-input" className="text-xs text-[#8fa89e] block mb-1.5 font-medium">
+              Maxfiy parol
+            </label>
+            <div className="relative">
+              <Lock className="w-4 h-4 text-[#8fa89e] absolute left-3.5 top-1/2 -translate-y-1/2" />
+              <input
+                id="admin-password-input"
+                type="password"
+                autoComplete="current-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••••••"
+                className="w-full pl-10 pr-4 py-2.5 bg-[#041510] border border-[#d4af37]/30 rounded-xl text-xs text-[#f8f6f0] focus:outline-none focus:border-[#d4af37]"
+                required
+              />
             </div>
+          </div>
 
-            <button
-              type="submit"
-              disabled={authSubmitting}
-              className="w-full py-3 rounded-xl bg-gradient-to-r from-[#d4af37] to-[#b8952b] text-[#041510] font-bold text-xs uppercase tracking-wider hover:opacity-95 transition-opacity disabled:opacity-50"
-            >
-              {authSubmitting
-                ? "Tekshirilmoqda..."
-                : authMode === 'login'
-                ? "Tizimga kirish"
-                : "Admin hisobini ro'yxatdan o'tkazish"}
-            </button>
-
-            <div className="relative my-4">
-              <div className="absolute inset-0 flex items-center">
-                <div className="w-full border-t border-[#d4af37]/20" />
-              </div>
-              <div className="relative flex justify-center text-[10px] uppercase">
-                <span className="bg-[#061d15] px-2 text-[#8fa89e]">yoki</span>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={handleGoogleAuth}
-              disabled={authSubmitting}
-              className="w-full py-2.5 rounded-xl bg-[#041510] hover:bg-[#0a2f24] text-[#f8f6f0] border border-[#d4af37]/30 font-medium text-xs flex items-center justify-center gap-2 transition-colors"
-            >
-              <span className="font-bold text-[#d4af37]">G</span>
-              <span>Google orqali kirish</span>
-            </button>
-
-            <div className="text-center pt-2">
-              <button
-                type="button"
-                onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')}
-                className="text-xs text-[#8fa89e] hover:text-[#d4af37]"
-              >
-                {authMode === 'login'
-                  ? "Yangi admin hisobini ochish"
-                  : "Mavjud hisob bilan kirish"}
-              </button>
-            </div>
-          </form>
-        )}
+          <button
+            type="submit"
+            disabled={authSubmitting}
+            className="w-full py-3 rounded-xl bg-gradient-to-r from-[#d4af37] to-[#b8952b] text-[#041510] font-bold text-xs uppercase tracking-wider hover:opacity-95 transition-opacity disabled:opacity-50 shadow-lg shadow-[#d4af37]/10"
+          >
+            {authSubmitting ? "Serverda tekshirilmoqda..." : "Tizimga kirish"}
+          </button>
+        </form>
       </div>
     );
   }
@@ -571,7 +528,7 @@ export const AdminView: React.FC = () => {
                 ODILJON QORI QUR'ON — Boshqaruv Markazi
               </h1>
               <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-500/30 flex items-center gap-1 font-semibold">
-                <UserCheck className="w-3 h-3" /> Admin: {currentUser.email}
+                <UserCheck className="w-3 h-3" /> Admin: {adminIdentity.username}
               </span>
             </div>
             <p className="text-[11px] text-[#8fa89e]">
@@ -1190,27 +1147,27 @@ export const AdminView: React.FC = () => {
               {/* Source Badge */}
               <span
                 className={`text-[10px] px-2.5 py-1 rounded-full font-semibold border ${
-                  firebaseConfigSource === 'environment'
+                  activeConfigSource === 'environment'
                     ? 'bg-emerald-950 text-emerald-300 border-emerald-500/40'
-                    : firebaseConfigSource === 'localStorage'
+                    : activeConfigSource === 'localStorage'
                     ? 'bg-teal-950 text-teal-300 border-teal-500/40'
                     : 'bg-amber-950 text-amber-300 border-amber-500/40'
                 }`}
               >
-                {firebaseConfigSource === 'environment'
+                {activeConfigSource === 'environment'
                   ? 'Manba: Environment (.env / Secrets)'
-                  : firebaseConfigSource === 'localStorage'
+                  : activeConfigSource === 'localStorage'
                   ? 'Manba: localStorage'
                   : 'Manba: Kiritilmagan'}
               </span>
             </div>
 
-            {firebaseConfigError && (
+            {activeConfigError && (
               <div className="p-3 rounded-xl bg-amber-950/70 border border-amber-500/40 text-amber-200 text-xs flex items-start gap-2">
                 <AlertCircle className="w-4 h-4 text-amber-400 mt-0.5 flex-shrink-0" />
                 <div>
-                  <span className="font-bold block">Konfiguratsiya to'liq emas:</span>
-                  <span className="text-[11px] leading-relaxed">{firebaseConfigError}</span>
+                  <span className="font-bold block">Konfiguratsiya holati:</span>
+                  <span className="text-[11px] leading-relaxed">{activeConfigError}</span>
                 </div>
               </div>
             )}
