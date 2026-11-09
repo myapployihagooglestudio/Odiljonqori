@@ -1,1 +1,63 @@
 @import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-arabic: 'Amiri Quran', 'Amiri', 'Scheherazade New', serif;
+    --font-scheherazade: 'Scheherazade New', serif;
+    --font-sans: 'Plus Jakarta Sans', sans-serif;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+}
+
+.font-arabic {
+  font-family: 'Amiri Quran', 'Amiri', serif;
+  line-height: 2.2;
+}
+
+.font-scheherazade {
+  font-family: 'Scheherazade New', serif;
+  line-height: 2.0;
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.05);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(212, 175, 55, 0.35);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(212, 175, 55, 0.6);
+}
+
+/* Range input styling for audio seekbar */
+input[type="range"].gold-slider {
+  accent-color: #d4af37;
+}
+
+/* Animated glow effects */
+@keyframes subtle-pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.85;
+    transform: scale(1.02);
+  }
+}
+
+.animate-subtle-pulse {
+  animation: subtle-pulse 3s infinite ease-in-out;
+}

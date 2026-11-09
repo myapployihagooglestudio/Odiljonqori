@@ -1,0 +1,27 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    
+    // Default deny
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn(); // In production, add custom claim or admin check
+    }
+
+    // Recitations audio files: public read, admin write only
+    match /recitations/odiljon-qori/{surahFile} {
+      allow read: if true;
+      allow write: if isAdmin() 
+        && request.resource.size < 250 * 1024 * 1024 // max 250MB
+        && request.resource.contentType.matches('audio/.*');
+    }
+  }
+}

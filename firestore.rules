@@ -1,0 +1,61 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Global Safety Net: default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
+    // Surahs: Public can read published surahs. Admin has full control.
+    match /surahs/{surahId} {
+      allow read: if resource.data.isPublished == true || isAdmin();
+      allow write: if isAdmin();
+
+      // Ayahs subcollection under surah
+      match /ayahs/{ayahId} {
+        allow read: if get(/databases/$(database)/documents/surahs/$(surahId)).data.isPublished == true || isAdmin();
+        allow write: if isAdmin();
+      }
+    }
+
+    // Admin audit logs: only admins can read and create
+    match /admin_logs/{logId} {
+      allow read, create: if isAdmin();
+      allow update, delete: if false; // Immutable audit logs
+    }
+
+    // Version snapshots: only admins can read and create
+    match /version_snapshots/{snapshotId} {
+      allow read, create: if isAdmin();
+      allow update, delete: if false;
+    }
+
+    // User bookmarks and listening history: private to each user
+    match /users/{userId} {
+      allow read, write: if isSignedIn() && request.auth.uid == userId;
+
+      match /bookmarks/{bookmarkId} {
+        allow read, write: if isSignedIn() && request.auth.uid == userId;
+      }
+
+      match /history/{historyId} {
+        allow read, write: if isSignedIn() && request.auth.uid == userId;
+      }
+    }
+
+    // System healthcheck document
+    match /system/{docId} {
+      allow read, write: if true;
+    }
+  }
+}
